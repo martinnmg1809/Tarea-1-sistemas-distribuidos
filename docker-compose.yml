@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  redis-db:
+    image: redis:alpine
+    command: redis-server --maxmemory 50mb --maxmemory-policy volatile-lfu 
+    ports:
+      - "6379:6379"
+
+  
+  sistema-cache:
+    build: ./cache
+    depends_on:
+      - redis-db
+    environment:
+      - REDIS_HOST=redis-db
+
+  generador-respuestas:
+    build: ./respuestas
+    volumes:
+      - ./data:/app/data #Carpeta para lectura de csv
+
+
+  generador-trafico:
+    build: ./trafico
+    depends_on:
+      - sistema-cache
+
+
+  almacenamiento-metricas: 
+    build: ./metricas
+    volumes:
+      - ./data:/app/data #Carpeta para almacenamiento de csv

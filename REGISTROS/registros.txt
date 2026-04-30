@@ -1,0 +1,19 @@
+zipf es mejor para simular cache dado que simula "puntos" populares. se espera que se tengan al menos una eficiencia del cache mayor a utilizar una distribucion uniforme.
+
+los "pesos" de las consultas fueron modificados para poder llenar la memoria cache sin necesidad de aumentar la cantidad de peticiones. Esto solo sirvió para los 50mb ya que con 200mb y 500mb no se llenaban o el ttl se acababa.
+q1 50kb
+q2 100kb
+q3 100kb
+q4 50kb
+q5 300kb
+
+cada ejecución con 5000 peticiones tomaba alrededor de 10 minutos
+
+se modifico los ttl en 2 casos:
+1. cuando la cache tiene 50mb, es LFU y es zipf
+	se bajo de 1min a 30seg
+2. cuando la cache tiene 200mb, es lfu y es zipf
+	se subio de 1min a 5min
+
+
+
