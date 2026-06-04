@@ -1,54 +1,148 @@
-# Análisis de Rendimiento en Memoria Caché
-## 🔗 Link del video 
-https://youtu.be/5nWnmfqwd0o
+# Tarea 2: Procesamiento y Fallback con Apache Kafka
+
+## 🔗 Links
+- **Video de demostración:** (pendiente)
+- **Repositorio:** https://github.com/martinnmg1809/Tarea-1-sistemas-distribuidos
+
+---
 
 ## 📄 Resumen
-Este proyecto presenta el diseño, implementación y evaluación de un sistema distribuido escalable para el procesamiento de datos urbanos masivos. La arquitectura utiliza microservicios orquestados en contenedores para realizar consultas analíticas sobre un dataset de edificaciones en la Región Metropolitana de Santiago, implementando estrategias de **Cache-Aside** y políticas de reemplazo de datos para optimizar la eficiencia del sistema.
 
-## 🏗️ Arquitectura y Componentes
+Esta entrega evoluciona la arquitectura de la Tarea 1 incorporando **Apache Kafka** como sistema de mensajería asíncrona. El objetivo principal es evitar la pérdida de consultas ante fallas temporales del sistema y mejorar la tolerancia a fallos mediante colas de reintento y una Dead Letter Queue (DLQ).
 
-El ecosistema está fragmentado en cuatro componentes desacoplados que interactúan a través de una red interna de **Docker**:
+---
 
-* **Generador de Tráfico Analítico (`trafico.py`)**: Emulador de carga de trabajo que genera peticiones concurrentes utilizando distribuciones probabilísticas (**Zipf** y **Uniforme**). Permite validar la localidad de referencia y el comportamiento del sistema ante tráfico sesgado o aleatorio.
-* **Orquestador de Caché (`cache.py`)**: Actúa como un *Proxy* de baja latencia. Implementa la lógica de búsqueda en **Redis** y gestiona la comunicación con el backend solo en caso de *cache miss*, minimizando el costo computacional.
-* **Motor de Cómputo (`respuestas.py`)**: Backend encargado del procesamiento de datos pesados. Utiliza **Pandas** y **NumPy** para realizar cálculos geoespaciales, filtrado por confianza y análisis de histogramas sobre el dataset cargado en memoria volátil.
-* **Sumidero de Telemetría (`metricas.py`)**: Servicio de monitoreo asíncrono que persiste los registros de cada transacción (timestamps, fuentes y latencias) en archivos CSV para su posterior auditoría.
+## 🏗️ Arquitectura
 
+```
+Generador de Tráfico
+        │
+        ▼ (publica consultas)
+   Kafka Topic: consultas (3 particiones)
+        │
+        ▼ (consumen)
+  Consumidores Kafka ──► Sistema Caché (Redis)
+        │                      │
+        │               HIT ◄──┘
+        │               MISS
+        │                │
+        ▼                ▼
+  Generador de Respuestas
+        │
+     ¿Éxito?
+     Sí ──► Métricas
+     No ──► Topic: consultas-retry
+                │
+          ¿retry_count >= MAX_RETRIES?
+          Sí ──► Topic: consultas-dlq (DLQ)
+          No ──► reintenta
+```
 
+---
 
-## 🛠️ Especificaciones Técnicas
+## 🗂️ Componentes
 
-### 📈 Consultas Soportadas (Q1-Q5)
-El sistema resuelve operaciones de agregación y comparación:
-1.  **Conteo (Q1)** y **Cálculo de Áreas (Q2)** mediante filtrado por Bounding Box.
-2.  **Densidad Urbana (Q3)** y **Análisis Comparativo (Q4)** entre zonas geográficas.
-3.  **Distribución de Confianza (Q5)** mediante la generación de histogramas dinámicos.
+| Servicio | Descripción |
+|---|---|
+| `kafka` | Broker Kafka 3.7.0 en modo KRaft (sin Zookeeper) |
+| `kafka-init` | Inicializa los 3 tópicos al arrancar |
+| `generador-trafico` | Publica consultas Q1–Q5 en Kafka (modo `kafka`) o llama directo al caché (modo `sincrono`) |
+| `consumidor-kafka` | Lee del tópico `consultas`, consulta caché y generador de respuestas |
+| `consumidor-retry` | Lee del tópico `consultas-retry` y reintenta el procesamiento |
+| `sistema-cache` | Proxy Redis con política LFU, TTL 5 min, 50MB |
+| `generador-respuestas` | Procesa consultas geoespaciales sobre el dataset |
+| `almacenamiento-metricas` | Registra eventos HIT, MISS, RETRY, DLQ en CSV |
 
-### 💾 Estrategia de Gestión de Memoria
-Se implementó un mecanismo de **Padding** (relleno de carga útil) para simular objetos de gran tamaño, permitiendo estresar las políticas de reemplazo de Redis (**LRU - Least Recently Used**) incluso con volúmenes controlados de peticiones.
+---
 
+## 📨 Tópicos Kafka
 
+| Tópico | Particiones | Descripción |
+|---|---|---|
+| `consultas` | 3 | Tópico principal — soporta hasta 3 consumidores en paralelo |
+| `consultas-retry` | 1 | Consultas fallidas que se reintentan |
+| `consultas-dlq` | 1 | Dead Letter Queue — consultas irrecuperables |
 
-## 🧪 Metodología de Evaluación
+---
 
-Para el análisis crítico, se utiliza el script `analisis.py`, el cual procesa los datos crudos y calcula métricas fundamentales de sistemas distribuidos:
+## ⚙️ Configuración de Reintentos
 
-* **Hit Rate**: Eficacia de la capa de almacenamiento temporal.
-* **Throughput**: Tasa de transferencia efectiva del sistema (Consultas/Seg).
-* **Percentiles de Latencia (p50/p95)**: Caracterización del tiempo de respuesta, identificando cuellos de botella en el peor escenario (p95).
-* **Cache Efficiency**: Métrica de costo-beneficio que pondera el ahorro de tiempo frente a la penalización por acceso a la base de datos.
-* **Eviction Rate**: Frecuencia de expulsión de datos en la caché por saturación de memoria.
+| Parámetro | Valor | Descripción |
+|---|---|---|
+| `MAX_RETRIES` | 3 | Intentos máximos antes de enviar a DLQ |
+| `RETRY_DELAY_MS` | 500 | Espera entre reintentos (ms) |
+
+**Política:** ante cualquier falla en el procesamiento (timeout, error HTTP, servicio caído), la consulta se reenvía al tópico `consultas-retry` incrementando su `retry_count`. Al alcanzar `MAX_RETRIES`, se envía a la DLQ.
+
+---
 
 ## 🚀 Guía de Ejecución
 
-1.  **Despliegue de Infraestructura**:
-    ```bash
-    sudo docker compose up --build
-    ```
-2.  **Configuración de Escenarios**: 
-    Modificar el parámetro `maxmemory` en `docker-compose.yml` para evaluar límites de 50MB, 200MB y 500MB.
-3.  **Extracción de Resultados**:
-    Tras completar el ciclo de peticiones, ejecutar el análisis de métricas:
-    ```bash
-    python3 analisis.py
-    ```
+### Modo Kafka (Tarea 2)
+```bash
+# Asegurarse de que MODO=kafka en docker-compose.yml
+sudo docker compose up --build
+```
+
+### Modo Síncrono (Tarea 1)
+```bash
+# Cambiar MODO=sincrono en docker-compose.yml
+sudo docker compose up redis-db sistema-cache generador-respuestas almacenamiento-metricas generador-trafico
+```
+
+### Escalar consumidores
+```bash
+sudo docker compose up --scale consumidor-kafka=3
+```
+
+---
+
+## 🧪 Escenarios de Evaluación
+
+| # | Script | Descripción |
+|---|---|---|
+| 1 | `escenarios/escenario1_base.sh` | Sistema síncrono base (Tarea 1) |
+| 2 | `escenarios/escenario2_kafka_1consumer.sh` | Kafka + 1 consumidor |
+| 3 | `escenarios/escenario3_kafka_nconsumers.sh N` | Kafka + N consumidores |
+| 4 | `escenarios/escenario4_falla_temporal.sh` | Falla del generador de respuestas |
+| 5 | `escenarios/escenario5_reintentos.sh` | Fallas intermitentes con reintentos |
+| 6 | `escenarios/escenario6_spike.sh` | Spike de tráfico |
+| 7 | `escenarios/escenario7_recuperacion.sh` | Comparación recuperación síncrono vs Kafka |
+
+### Flujo para capturar métricas por escenario
+```bash
+# 1. Correr el escenario
+sudo bash escenarios/escenario2_kafka_1consumer.sh
+
+# 2. Guardar el CSV con nombre del escenario
+cp data/metricas_sistema.csv data/metricas_kafka_1c.csv
+
+# 3. Analizar métricas
+python3 metricas/analisis.py "Kafka 1 Consumer"
+
+# 4. Generar gráficos comparativos (después de todos los escenarios)
+python3 metricas/graficos.py
+```
+
+---
+
+## 📊 Métricas Registradas
+
+| Métrica | Descripción |
+|---|---|
+| Throughput | Consultas procesadas exitosamente por segundo |
+| Latencia p50/p95 | Percentiles de tiempo de respuesta |
+| Hit Rate | Porcentaje de consultas resueltas desde caché |
+| Retry Rate | Consultas reenviadas al tópico de reintento |
+| DLQ Rate | Consultas enviadas a la Dead Letter Queue |
+| Recovery Rate | Consultas recuperadas exitosamente tras fallos |
+| Recovery Time | Tiempo en vaciar la cola de reintentos tras una falla |
+
+---
+
+## 🛠️ Stack Tecnológico
+
+- **Apache Kafka 3.7.0** (modo KRaft, sin Zookeeper)
+- **Redis** (caché con política LFU, 50MB)
+- **Python 3.12** con Flask, kafka-python-ng, Pandas
+- **Docker + Docker Compose**
