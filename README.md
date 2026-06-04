@@ -1,7 +1,7 @@
 # Tarea 2: Procesamiento y Fallback con Apache Kafka
 
 ## 🔗 Links
-- **Video de demostración:** (pendiente)
+- **Video de demostración:** https://youtu.be/DWrHSteLQ5g
 - **Repositorio:** https://github.com/martinnmg1809/Tarea-1-sistemas-distribuidos
 
 ---
