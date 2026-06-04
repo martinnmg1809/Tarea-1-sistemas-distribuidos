@@ -1,36 +1,39 @@
 #!/bin/bash
-# Escenario 5: Reintentos - consultas que fallan antes de resolverse
 echo "=== Escenario 5: Reintentos con Falla Intermitente ==="
 
 cd "$(dirname "$0")/.."
-> data/metricas_sistema.csv
 
 docker compose up -d kafka kafka-init redis-db sistema-cache \
-  generador-respuestas almacenamiento-metricas \
-  consumidor-kafka consumidor-retry
+  generador-respuestas almacenamiento-metricas consumidor-retry
 
 echo "Esperando servicios..."
 sleep 15
 
-# Ciclos de falla y recuperación para forzar reintentos
-for i in 1 2 3; do
-  echo "--- Ciclo $i: 50 consultas normales ---"
-  docker compose run --rm \
-    -e MODO=kafka \
-    -e DISTRIBUCION=zipf \
-    -e TOTAL_PETICIONES=50 \
-    -e INTERVALO_SEG=0.05 \
-    generador-trafico
+# Consumidor con 50% de fallo para forzar reintentos pero también recuperaciones
+docker compose run -d --name consumidor-reintentos \
+  -e KAFKA_BROKER=kafka:9092 \
+  -e CACHE_URL=http://sistema-cache:8000/consultar \
+  -e RESPUESTAS_URL=http://generador-respuestas:5000/procesar \
+  -e METRICAS_URL=http://almacenamiento-metricas:9000/registrar \
+  -e MAX_RETRIES=3 \
+  -e RETRY_DELAY_MS=500 \
+  -e FAILURE_RATE=0.5 \
+  consumidor-kafka
 
-  echo "--- Ciclo $i: Falla de 8 segundos ---"
-  docker compose stop generador-respuestas
-  sleep 8
-  docker compose start generador-respuestas
-  sleep 5
-done
+sleep 5
 
-echo "Esperando procesamiento final del backlog..."
-sleep 30
+echo "--- Generando 300 consultas con falla intermitente ---"
+docker compose run --rm \
+  -e MODO=kafka \
+  -e DISTRIBUCION=zipf \
+  -e TOTAL_PETICIONES=300 \
+  -e INTERVALO_SEG=0.1 \
+  generador-trafico
 
+echo "Esperando procesamiento de reintentos..."
+sleep 40
+
+docker stop consumidor-reintentos 2>/dev/null
+docker rm consumidor-reintentos 2>/dev/null
 docker compose down
-echo "=== Escenario 5 finalizado. Ejecuta: python3 metricas/analisis.py 'Reintentos' ==="
+echo "=== Escenario 5 finalizado ==="
