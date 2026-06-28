@@ -47,7 +47,7 @@ services:
     networks:
       - sd-net
 
-  # Inicializa los tópicos Kafka una sola vez al arrancar
+  # Inicializa los tópicos Kafka (Tarea 2 + Tarea 3)
   kafka-init:
     image: apache/kafka:3.7.0
     depends_on:
@@ -59,6 +59,7 @@ services:
       /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic consultas --partitions 3 --replication-factor 1 &&
       /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic consultas-retry --partitions 1 --replication-factor 1 &&
       /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic consultas-dlq --partitions 1 --replication-factor 1 &&
+      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic metrics-topic --partitions 3 --replication-factor 1 &&
       echo '>>> Topicos creados:' &&
       /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list
       "
@@ -66,7 +67,7 @@ services:
       - sd-net
 
   # ──────────────────────────────────────────
-  # SERVICIOS DE APLICACIÓN (Tarea 1, sin cambios)
+  # SERVICIOS DE APLICACIÓN (Tarea 1 y 2, sin cambios)
   # ──────────────────────────────────────────
   sistema-cache:
     build: ./cache
@@ -86,6 +87,11 @@ services:
 
   almacenamiento-metricas:
     build: ./metricas
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      - KAFKA_BROKER=kafka:9092
     volumes:
       - ./data:/app/data
     networks:
@@ -93,8 +99,6 @@ services:
 
   # ──────────────────────────────────────────
   # GENERADOR DE TRÁFICO
-  # (en Tarea 1 llamaba directo a sistema-cache;
-  #  en Tarea 2 publicará en Kafka — se actualiza en Commit 2)
   # ──────────────────────────────────────────
   generador-trafico:
     build: ./trafico
@@ -105,13 +109,12 @@ services:
         condition: service_started
     environment:
       - KAFKA_BROKER=kafka:9092
-      - MODO=sincrono   # "sincrono" usa flujo Tarea 1 | "kafka" usa flujo Tarea 2
+      - MODO=sincrono   # "sincrono" usa flujo Tarea 1 | "kafka" usa flujo Tarea 2/3
     networks:
       - sd-net
 
   # ──────────────────────────────────────────
   # CONSUMIDORES KAFKA (Tarea 2)
-  # Escalables horizontalmente con --scale consumidor-kafka=N
   # ──────────────────────────────────────────
   consumidor-kafka:
     build: ./kafka
@@ -131,12 +134,12 @@ services:
       - METRICAS_URL=http://almacenamiento-metricas:9000/registrar
       - MAX_RETRIES=3
       - RETRY_DELAY_MS=500
+      - FAILURE_RATE=0.0  # ajustable para escenarios de falla (Tarea 2)
     networks:
       - sd-net
 
   # ──────────────────────────────────────────
   # CONSUMIDOR DE REINTENTO KAFKA (Tarea 2)
-  # Lee de consultas-retry y reintenta el procesamiento
   # ──────────────────────────────────────────
   consumidor-retry:
     build: ./kafka
@@ -158,6 +161,63 @@ services:
     networks:
       - sd-net
 
+  # ──────────────────────────────────────────
+  # NUEVO TAREA 3: Elasticsearch
+  # ──────────────────────────────────────────
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\"\\|\"status\":\"yellow\"'"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 30s
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    networks:
+      - sd-net
+
+  # ──────────────────────────────────────────
+  # NUEVO TAREA 3: Kibana
+  # ──────────────────────────────────────────
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.13.4
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    networks:
+      - sd-net
+
+  # ──────────────────────────────────────────
+  # NUEVO TAREA 3: Spark Structured Streaming job
+  # ──────────────────────────────────────────
+  spark-streaming:
+    build: ./spark
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      - KAFKA_BROKER=kafka:9092
+      - ES_HOST=elasticsearch
+      - ES_PORT=9200
+    networks:
+      - sd-net
+
 networks:
   sd-net:
     driver: bridge
+
+volumes:
+  esdata:
